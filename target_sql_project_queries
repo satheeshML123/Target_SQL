@@ -1,0 +1,223 @@
+#********************************************
+#structure & characteristics of the dataset
+#********************************************
+
+# 1.	Data type of all columns in the "customers" table.
+
+select column_name, data_type from 
+`target-brazil-123.target_123.INFORMATION_SCHEMA.COLUMNS`
+where table_name='customers';
+
+# 2.	Get the time range between which the orders were placed.
+
+select min(order_purchase_timestamp) min_time, 
+max(order_purchase_timestamp) max_time 
+from `target_123.orders`;
+
+# 3.	Count the Cities & States of customers who ordered during the given period.
+select count(distinct customer_city) city_count, 
+count(distinct customer_state) state_count 
+from `target_123.customers`;
+
+#***************************************************
+#2.	In-depth Exploration:
+#***************************************************
+
+# 1.	Is there a growing trend in the no. of orders placed over the past years?
+select year, count(order_id) counts from
+(select order_id,
+extract(year from order_purchase_timestamp) year
+from `target_123.orders`)t1
+group by t1.year
+order by year, counts;
+
+# 2.	Can we see some kind of monthly seasonality in terms of the no. of orders being placed?
+select months, count(order_id) order_count
+from 
+(select 
+  order_id, 
+  extract(month from order_purchase_timestamp) months 
+  from `target_123.orders`)t1
+group by months
+order by months, order_count;
+
+#3.	During what time of the day, do the Brazilian customers mostly place their orders? (Dawn, Morning, Afternoon or Night)
+select time, count(order_id) counts from 
+(select case when hours>=0 and hours<=6 then '1_Dawn'
+when hours>=7 and hours<=12 then '2_Mornings'
+when hours>=13 and hours<=18 then '3_Afternoon'
+when hours>=19 and hours<=23 then '4_Night'
+end as time,
+order_id
+from
+(select 
+order_id, 
+extract(hour from order_purchase_timestamp) hours 
+from `target_123.orders`)t1)t2
+group by time
+order by time, counts;
+
+#*************************************************** 
+#3.	Evolution of E-commerce orders in the Brazil region:
+#*************************************************** 
+
+#1.	Get the month on month no. of orders placed in each state.
+select customer_state, years, months, count(order_id) order_counts from 
+(select order_id, extract(month from order_purchase_timestamp) months, 
+extract(year from order_purchase_timestamp) years,
+customer_state
+from 
+`target_123.orders` o 
+join 
+`target_123.customers` c
+on o.customer_id=c.customer_id)t1
+group by customer_state,years, months
+order by customer_state,years, months;
+
+#2.	How are the customers distributed across all the states?
+select customer_state, 
+count(customer_id) customer_counts 
+from `target_123.customers`
+group by customer_state
+order by customer_counts desc;
+
+#******************************************************
+#4. Analyze the money movement by e-commerce by looking at order prices, freight and others.
+#******************************************************
+
+#1.	Get the % increase in the cost of orders from year 2017 to 2018 (include months between Jan to Aug only).
+with cte1 as (
+select years, months, payment_value from
+(select extract(year from o.order_purchase_timestamp) years,
+extract(month from o.order_purchase_timestamp) months,
+p.payment_value
+from `target_123.orders` o 
+join `target_123.payments` p
+on o.order_id = p.order_id)t1
+where (months between 1 and 8) and (years between 2017 and 2018)),
+
+cte2 as (
+  select months, sum(payment_value) sum_2017 from cte1
+  where years=2017
+  group by months),
+
+cte3 as (
+  select months, sum(payment_value) sum_2018 from cte1
+  where years=2018
+  group by months
+)
+
+select months, sum_2017, sum_2018, round(sum_2018-sum_2017,2) diff from
+(select months, round((sum_2017/total)*100,2) sum_2017, round((sum_2018/total)*100,2) sum_2018
+from 
+(select cte2.months, sum_2017, sum_2018, (sum_2017+sum_2018) total from cte2 
+join cte3
+on cte2.months=cte3.months))t1
+order by months;
+
+#2.	Calculate the Total & Average value of order price for each state.
+select customer_state, 
+round(sum(p.payment_value),2) total_value, 
+round(avg(p.payment_value),2) avg_value from `target_123.orders` o
+join `target_123.customers` c
+on o.customer_id=c.customer_id
+join `target_123.payments` p
+on p.order_id=o.order_id
+group by customer_state
+order by customer_state;
+
+#3.	Calculate the Total & Average value of order freight for each state.
+select customer_state, round(sum(freight_value),2) total_freight, 
+round(avg(freight_value),2) avg_freight from `target_123.orders` o
+join `target_123.customers` c 
+on o.customer_id=c.customer_id
+join `target_123.order_items` i
+on i.order_id=o.order_id
+group by customer_state;
+
+#******************************************************
+#5.	Analysis based on sales, freight and delivery time.
+#******************************************************
+#1.	Find the no. of days taken to deliver each order from the order’s purchase date as delivery time.
+select o.order_id, 
+date_diff(o.order_delivered_customer_date,o.order_purchase_timestamp,day) time_to_deliver,
+date_diff(o.order_delivered_customer_date,o.order_estimated_delivery_date,day) diff_estimated_delivery
+from `target_123.orders` o;
+
+#2.	Find out the top 5 states with the highest & lowest average freight value.
+with temp as 
+(select customer_state,  
+round(avg(freight_value),2) avg_freight from `target_123.orders` o
+join `target_123.customers` c 
+on o.customer_id=c.customer_id
+join `target_123.order_items` i
+on i.order_id=o.order_id
+group by customer_state),
+
+cte1 as 
+(select *, row_number() over(order by avg_freight desc) r1 from temp),
+
+cte2 as 
+(select *, row_number() over(order by avg_freight) r1 from temp)
+
+select cte1.customer_state as top_5_state, cte2.customer_state as bottom_5_state from cte1
+join cte2
+on cte1.r1=cte2.r1
+limit 5;
+
+#3.	Find out the top 5 states with the highest & lowest average delivery time.
+with temp as (
+select customer_state, round(avg(date_diff(o.order_delivered_customer_date,o.order_purchase_timestamp,day)),2)avg_delivery   from `target_123.orders` o
+join `target_123.customers` c
+on o.customer_id=c.customer_id
+group by customer_state),
+cte1 as (
+select *, row_number() over(order by avg_delivery desc) r1 from temp),
+
+cte2 as (
+select *, row_number() over(order by avg_delivery) r1 from temp
+)
+
+select cte1.customer_state as top_5_state_delivery_time, cte2.customer_state as bottom_5_state_delivery_time 
+from cte1
+join cte2
+on cte1.r1=cte2.r1
+limit 5;
+
+#4.	Find out the top 5 states where the order delivery is really fast as compared to the estimated date of delivery.
+with temp as 
+(select customer_state, 
+round(avg(date_diff(order_delivered_customer_date,order_purchase_timestamp,day)),2) avg_delivery_time,
+round(avg(date_diff(order_estimated_delivery_date,order_purchase_timestamp,day)),2) avg_est_delivery_time
+from `target_123.orders` o 
+join `target_123.customers` c  
+on o.customer_id=c.customer_id
+group by customer_state)
+
+select customer_state from
+(select customer_state, 
+round(avg_est_delivery_time-avg_delivery_time,2) diff 
+from temp)t1
+order by t1.diff
+limit 5;
+
+#******************************************************
+#6.	Analysis based on the payments:
+#******************************************************
+
+#1.	Find the month on month no. of orders placed using different payment types.
+select years, months, payment_type, count(*) counts from 
+(select payment_type, extract(month from o.order_purchase_timestamp) months,
+extract(year from o.order_purchase_timestamp) years 
+from `target_123.payments` p
+join `target_123.orders` o
+on p.order_id=o.order_id)t1
+group by years, months, payment_type
+order by years, months, payment_type;
+
+#2.	Find the no. of orders placed on the basis of the payment installments that have been paid.
+ select payment_installments, count(order_id) no_of_orders  from `target_123.payments`
+ group by payment_installments
+ order by payment_installments;
+
+
